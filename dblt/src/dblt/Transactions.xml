@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8" ?>
+
+<transactions>
+  <transaction random="true">
+    <sql>SELECT 'I am client #client_id#';</sql>
+    <sql>SELECT 2;</sql>
+  </transaction>
+  <transaction>
+    <sql random="true">SELECT 'something';</sql>
+    <sql>SELECT 20;</sql>
+  </transaction>
+</transactions>
