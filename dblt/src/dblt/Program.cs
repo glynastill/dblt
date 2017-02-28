@@ -8,6 +8,7 @@ using System.Text;
 using System.IO;
 using System.Threading;
 using System.Data;
+using System.Data.SqlClient;
 using Npgsql;
 using System.Configuration;
 using System.Diagnostics;
@@ -17,6 +18,7 @@ namespace dblt
     class dblt
     {
         public static string sServerDescription = (string)ConfigurationManager.AppSettings["ServerDescription"];
+        public static string sMode = (string)ConfigurationManager.AppSettings["Mode"];
         public static int iClients = Convert.ToInt32(ConfigurationManager.AppSettings["Clients"]);
         public static int iClientsScale = Convert.ToInt32(ConfigurationManager.AppSettings["ClientsScale"]);
         public static int iClientsMax = Convert.ToInt32(ConfigurationManager.AppSettings["ClientsMax"]);
@@ -27,18 +29,17 @@ namespace dblt
         public static bool bVerboseScreen = Convert.ToBoolean(ConfigurationManager.AppSettings["VerboseScreen"]);
         public static bool bOnFailureRetry = Convert.ToBoolean(ConfigurationManager.AppSettings["ConnectionRetry"]);
         public static bool bConnPerIteration = Convert.ToBoolean(ConfigurationManager.AppSettings["ConnectionPerIteration"]);
-        public static string sConn = (string)ConfigurationManager.AppSettings["PgConnectionString"];
+        public static string sConn = (string)ConfigurationManager.AppSettings["ConnectionString"];
         public static string sTransactionsFile = (string)ConfigurationManager.AppSettings["TransactionsFile"];
         public static int iSleepTime = Convert.ToInt32(ConfigurationManager.AppSettings["SleepTime"]);
-        
+        private static List<string> lsValidModes = new List<string> { "pgsql", "mssql" };
+
         public static Object oTransCounterLock = new Object();
         public static Object oIterationCounterLock = new Object();
         public static Object oTransDurationLock = new Object();
         public static Object oLogLock = new Object();
 
-        //public static DataSet dsTransactions = readTransactionsFile(sTransactionsFile);
         public static XmlDocument xmlTransactions = readTransactionsFile(sTransactionsFile);
-        
 
         private static PerformanceCounter oCpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
         private static PerformanceCounter oSysCpuCounter = new PerformanceCounter("Processor", "% Privileged Time", "_Total");
@@ -46,7 +47,6 @@ namespace dblt
 
         public static string timeStamp = "dd/MM/yyyy HH:mm";
         public static string[] aLogArray = new string[10000000];
-        //public static double[] aTransactionTimeArray = new double[iClientsMax * iIterations * dsTransactions.Tables[0].Columns.Count];
         public static double[] aTransactionTimeArray = new double[iClientsMax * iIterations * xmlTransactions.SelectNodes("//transaction").Count];        
         
         public static int iLogIndex, iRunningAtMax, iRunningAtMin, iMaxRunning, iCompletedIterations, iCompletedTransactions;
@@ -57,6 +57,11 @@ namespace dblt
         
         static void Main(string[] args)
         {
+            if (!lsValidModes.Contains(sMode))
+            {
+                Console.WriteLine("Invalid operating mode '{0}': Supported modes are 'mssql' or 'pgsql'", sMode);
+                Environment.Exit(1);
+            }
             if (iClients != 0)
             {
                 MainWorker(iClients);
@@ -271,11 +276,19 @@ namespace dblt
                 string sSql = "";
                 int iRandomStmt = 0;
                 int iRandomTran = 0;
+                SqlConnection msconn = null;
                 NpgsqlConnection conn = null;
                 if (!bConnPerIteration)
                 {
-                    conn = new NpgsqlConnection(sConn);
-                    conn.Open();
+                    if (sMode == "pgsql") {
+                        conn = new NpgsqlConnection(sConn);
+                        conn.Open();
+                    }
+                    else if (sMode == "mssql")
+                    {
+                        msconn = new SqlConnection(sConn);
+                        msconn.Open();
+                    }
                 }
 
                 for (int i = 0; i < iIterations; i++)
@@ -285,11 +298,18 @@ namespace dblt
                             DateTime startTime = DateTime.Now;
                             if (bConnPerIteration)
                             {
-                                conn = new NpgsqlConnection(sConn);
-                                conn.Open();
+                                if (sMode == "pgsql")
+                                {
+                                    conn = new NpgsqlConnection(sConn);
+                                    conn.Open();
+                                }
+                                else if (sMode == "mssql")
+                                {
+                                    msconn = new SqlConnection(sConn);
+                                    msconn.Open();
+                                }
                             }
 
-                            //foreach (DataRow transaction in dsTransactions.Tables[0].Rows)
                             iTransOn = 0;
                             foreach (XmlNode node in xmlTransactions.SelectNodes("//transaction"))
                             {
@@ -300,9 +320,20 @@ namespace dblt
                                     iRandomTran = random.Next(0, 2);
                                 }
 
-                                if (iRandomTran == 0)
-                                {
-                                    NpgsqlTransaction tran = conn.BeginTransaction();
+                            if (iRandomTran == 0)
+                            {
+                                    NpgsqlTransaction tran = null;
+                                    SqlTransaction mstran = null;
+
+                                    if (sMode == "pgsql")
+                                    {
+                                        tran = conn.BeginTransaction();
+                                    }
+                                    else if (sMode == "mssql")
+                                    {
+                                         mstran = msconn.BeginTransaction();
+                                    }
+
                                     DateTime beginTime = DateTime.Now;
 
                                     lock (oTransCounterLock)
@@ -310,7 +341,6 @@ namespace dblt
                                         iRunningTransactions++;
                                     }
 
-                                    //foreach (DataColumn column in dsTransactions.Tables[0].Columns)
                                     iSqlOn = 0;
                                     foreach (XmlNode subnode in node.SelectNodes("//sql"))
                                     {
@@ -324,14 +354,32 @@ namespace dblt
                                         if (iRandomStmt == 0)
                                         {
                                             sSql = subnode.InnerText;
-                                            //NpgsqlCommand command = new NpgsqlCommand(transaction[column].ToString().Replace("#client_id#", iThread.ToString()), conn, tran);
-                                            NpgsqlCommand command = new NpgsqlCommand(sSql.Replace("#client_id#", iThread.ToString()), conn, tran);
-                                            NpgsqlDataReader dr = command.ExecuteReader();
 
-                                            iCompletedQueries++;
-                                            while (dr.Read())
+                                            if (sMode == "pgsql")
                                             {
-                                                //Just pull the data back into our dataset (but we don't care about it)
+                                                NpgsqlCommand command = new NpgsqlCommand(sSql.Replace("#client_id#", iThread.ToString()), conn, tran);
+                                                NpgsqlDataReader dr = command.ExecuteReader();
+
+                                                iCompletedQueries++;
+                                                while (dr.Read())
+                                                {
+                                                    //Just pull the data back into our dataset (but we don't care about it)
+                                                }
+
+                                                dr.Close();
+                                            }
+                                            else if (sMode == "mssql")
+                                            {
+                                                SqlCommand command = new SqlCommand(sSql.Replace("#client_id#", iThread.ToString()), msconn, mstran);
+                                                SqlDataReader dr = command.ExecuteReader();
+
+                                                iCompletedQueries++;
+                                                while (dr.Read())
+                                                {
+                                                    //Just pull the data back into our dataset (but we don't care about it)
+                                                }
+
+                                                dr.Close();
                                             }
 
                                             if (iLogLevel > 1)
@@ -348,7 +396,16 @@ namespace dblt
                                         }
                                     }
 
-                                    tran.Commit();
+
+                                    if (sMode == "pgsql")
+                                    {
+                                        tran.Commit();
+                                    }
+                                    else if (sMode == "mssql")
+                                    {
+                                        mstran.Commit();
+                                    }
+
                                     DateTime commitTime = DateTime.Now;
                                     TimeSpan transactionDuration = commitTime - beginTime;
 
@@ -400,7 +457,14 @@ namespace dblt
 
                             if (bConnPerIteration)
                             {
-                                conn.Close();
+                                if (sMode == "pgsql")
+                                {
+                                    conn.Close();
+                                }
+                                else if (sMode == "mssql")
+                                {
+                                    msconn.Close();
+                                }
                             }
                             
                             DateTime stopTime = DateTime.Now;
@@ -516,21 +580,18 @@ namespace dblt
             }
         }
 
-        //public static DataSet readTransactionsFile(string sTransactionsFile)
         public static XmlDocument readTransactionsFile(string sTransactionsFile)
         {
             DataSet ds = new DataSet();
             XmlDocument transfile = new XmlDocument();
             try
             {
-                //GA ds.ReadXml(sTransactionsFile, XmlReadMode.InferSchema);
                 transfile.Load(sTransactionsFile);
             }
             catch (Exception e)
             {
                 Info("Error reading transaction file " + e.ToString(), iLogLevel, bVerboseScreen);
             }
-            //return ds;
             return transfile;
         }
     }
