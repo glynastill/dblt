@@ -1,7 +1,7 @@
 dblt
 ====
 
-A C# load testing program for PostgreSQL using the npgsql data provider.
+A C# load testing program for SQL Server or PostgreSQL (using the npgsql data provider).
 
 Usage
 -----
@@ -15,7 +15,9 @@ App.config parameters
 
 **ServerDescription** (text) 		 - A description about the test run
 
-**PgConnectionString** (test)		 - The npgsql connection string
+**Mode** (text)		 		 - mssql for SQL Server, pgsql for PostgreSQL 
+
+**ConnectionString** (text)		 - The sql or npgsql connection string
 
 **ConnectionRetry** (boolean)		 - boolean - Whether or not clients that
 					   fail to connect should retry (true), 
@@ -69,7 +71,7 @@ sub nodes, for which any can have a random attribute assigned to make them be
 either run or skipped on a random basis. 
 
 The text *#client_id#* will also be replaced with the integer id of each client 
-thread in the testing program; this can be usefull for identifying individual
+thread in the testing program; this can be useful for identifying individual
 clients against queries.
  
     <transactions>
